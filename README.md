@@ -5,10 +5,10 @@ A tiny Go CLI to generate `index.ts` / `index.tsx` files for your TypeScript cod
 ## Features
 
 - Recursively scans your project for `.ts` / `.tsx` (skips `.d.ts` and existing `index.*`)
-- Enforces a configurable max file-count (default 300)
+- Enforces a configurable max file-count (default 10000)
 - Chooses `.tsx` for an index if **any** `.tsx` is found in its subtree
 - Exports all immediate files and subfolders that contain TS(X)
-- Supports **ignore patterns** (default: `node_modules`, `.git`)
+- Supports **ignore patterns** (default: `node_modules`, `.git` etc.)
 - Supports `--dry-run`, `--verbose`
 - Zero dependencies beyond the Go stdlib
 
