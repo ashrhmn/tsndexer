@@ -10,28 +10,34 @@ import (
 	"strings"
 )
 
-var (
-	createdCount int
-)
+var createdCount int
 
 func main() {
-	// -- CLI flags
+	// --- CLI flags
 	var (
 		maxFiles          int
 		dryRun, verbose   bool
 		showHelp          bool
 		ignorePatternsStr string
 	)
-	flag.IntVar(&maxFiles, "m", 300, "maximum number of .ts/.tsx files to process")
-	flag.IntVar(&maxFiles, "max-files", 300, "maximum number of .ts/.tsx files to process")
-	flag.BoolVar(&dryRun, "n", false, "dry run: show what would be done without writing files")
-	flag.BoolVar(&dryRun, "dry-run", false, "dry run: show what would be done without writing files")
+	flag.IntVar(&maxFiles, "m", 10000, "maximum number of .ts/.tsx files to process")
+	flag.IntVar(&maxFiles, "max-files", 10000, "maximum number of .ts/.tsx files to process")
+	flag.BoolVar(&dryRun, "n", false, "dry run: preview without writing files")
+	flag.BoolVar(&dryRun, "dry-run", false, "dry run: preview without writing files")
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	flag.BoolVar(&showHelp, "h", false, "show help")
 	flag.BoolVar(&showHelp, "help", false, "show help")
-	flag.StringVar(&ignorePatternsStr, "i", "node_modules,.git", "comma-separated list of glob patterns or names to ignore")
-	flag.StringVar(&ignorePatternsStr, "ignore", "node_modules,.git", "comma-separated list of glob patterns or names to ignore")
+	flag.StringVar(
+		&ignorePatternsStr,
+		"i",
+		"node_modules,.git,dist,build,out,coverage,.cache,.next,.parcel-cache,lib,esm,cjs,.husky,.vscode,.idea", "comma-separated glob patterns or names to ignore",
+	)
+	flag.StringVar(
+		&ignorePatternsStr,
+		"ignore",
+		"node_modules,.git,dist,build,out,coverage,.cache,.next,.parcel-cache,lib,esm,cjs,.husky,.vscode,.idea", "comma-separated glob patterns or names to ignore",
+	)
 
 	// Custom usage
 	flag.Usage = func() {
@@ -42,8 +48,8 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s              # process current directory\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s . -m 1000    # set max files to 1000\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s ./src        # process src folder\n", os.Args[0])
-		fmt.Fprintf(flag.CommandLine.Output(), "  %s -n ./lib     # preview changes without writing files\n", os.Args[0])
-		fmt.Fprintf(flag.CommandLine.Output(), "  %s . -i \"dist,build\"  # ignore dist and build folders\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s -n ./lib     # dry-run\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s . -i \"dist,build\"  # ignore dist & build\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -58,74 +64,53 @@ func main() {
 		fmt.Printf("Ignoring patterns: %v\n", ignorePatterns)
 	}
 
-	// Determine target dir
-	args := flag.Args()
-	var root string
-	if len(args) == 0 {
-		root = "."
-	} else if len(args) == 1 {
-		root = args[0]
-	} else {
+	// Determine root directory
+	root := "."
+	if args := flag.Args(); len(args) > 1 {
 		fmt.Fprintln(os.Stderr, "Error: too many arguments.")
 		flag.Usage()
 		os.Exit(1)
+	} else if len(args) == 1 {
+		root = args[0]
 	}
 
-	// 1) Count .ts/.tsx files (skip index and .d.ts), skipping ignored paths, and enforce limit
-	count, err := findCount(root, maxFiles, verbose, ignorePatterns)
+	// 1) Count everything first
+	totalCount, err := countAllFiles(root, verbose, ignorePatterns)
 	if err != nil {
-		if strings.Contains(err.Error(), "max file count exceeded") {
-			fmt.Fprintf(os.Stderr, "Error: %s. Use `-m` to raise the limit.\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "Error scanning files: %v\n", err)
-		}
+		fmt.Fprintf(os.Stderr, "Error scanning files: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 2) Enforce limit
+	if totalCount > maxFiles {
+		fmt.Fprintf(
+			os.Stderr,
+			"Error: found %d .ts/.tsx files, which exceeds the limit of %d. Use `-m` to raise it.\n",
+			totalCount, maxFiles,
+		)
 		os.Exit(1)
 	}
 	if verbose {
-		fmt.Printf("Found %d .ts/.tsx files (limit %d)\n", count, maxFiles)
+		fmt.Printf("Found %d .ts/.tsx files (limit %d)\n", totalCount, maxFiles)
 	}
 
-	// 2) Recursively generate index files (skipping ignored)
-	_, _, err = processDir(root, verbose, dryRun, ignorePatterns)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error processing directory: %v\n", err)
+	// 3) Generate indexes
+	if _, _, err := processDir(root, verbose, dryRun, ignorePatterns); err != nil {
+		fmt.Fprintf(os.Stderr, "Error processing directories: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 3) Summary
+	// 4) Summary
 	if dryRun {
-		fmt.Printf("Dry run complete: %d index file(s) would have been generated.\n", createdCount)
+		fmt.Printf("Dry run: %d index file(s) would have been generated.\n", createdCount)
 	} else {
 		fmt.Printf("Done. Generated %d index file(s).\n", createdCount)
 	}
 }
 
-// parseIgnorePatterns splits the comma-separated list.
-func parseIgnorePatterns(s string) []string {
-	parts := strings.Split(s, ",")
-	var out []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// matchesIgnore returns true if name matches any of the glob patterns.
-func matchesIgnore(name string, patterns []string) bool {
-	for _, pat := range patterns {
-		if match, _ := filepath.Match(pat, name); match {
-			return true
-		}
-	}
-	return false
-}
-
-// findCount walks the tree and counts .ts/.tsx (excluding index.* and .d.ts), skipping ignored paths.
-// Returns an error if count > max.
-func findCount(root string, max int, verbose bool, ignore []string) (int, error) {
+// countAllFiles walks the tree and returns the total number of .ts/.tsx
+// (excluding index.* and .d.ts), skipping ignored paths.
+func countAllFiles(root string, verbose bool, ignore []string) (int, error) {
 	count := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -135,35 +120,30 @@ func findCount(root string, max int, verbose bool, ignore []string) (int, error)
 			return nil
 		}
 		name := d.Name()
-
-		// Skip ignored dirs
+		// skip ignored dirs
 		if d.IsDir() && matchesIgnore(name, ignore) {
 			if verbose {
 				fmt.Printf("Skipping ignored dir: %s\n", path)
 			}
 			return fs.SkipDir
 		}
-		// Skip ignored files
+		// skip ignored files
 		if !d.IsDir() && matchesIgnore(name, ignore) {
 			if verbose {
 				fmt.Printf("Skipping ignored file: %s\n", path)
 			}
 			return nil
 		}
-
 		if d.IsDir() {
 			return nil
 		}
-		lower := strings.ToLower(name)
-		if lower == "index.ts" || lower == "index.tsx" || strings.HasSuffix(lower, ".d.ts") {
+		l := strings.ToLower(name)
+		if l == "index.ts" || l == "index.tsx" || strings.HasSuffix(l, ".d.ts") {
 			return nil
 		}
-		ext := filepath.Ext(lower)
+		ext := filepath.Ext(l)
 		if ext == ".ts" || ext == ".tsx" {
 			count++
-			if count > max {
-				return fmt.Errorf("max file count exceeded: %d > %d", count, max)
-			}
 		}
 		return nil
 	})
@@ -188,15 +168,13 @@ func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTs
 	// 1) scan this folder’s entries
 	for _, e := range entries {
 		name := e.Name()
-
-		// Skip ignored
+		// skip ignored
 		if matchesIgnore(name, ignore) {
 			if verbose {
 				fmt.Printf("Skipping ignored entry: %s/%s\n", dir, name)
 			}
 			continue
 		}
-
 		lower := strings.ToLower(name)
 		if e.IsDir() {
 			subdirs = append(subdirs, name)
@@ -237,12 +215,12 @@ func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTs
 		hasTsx = true
 	}
 
-	// 4) if nothing here or below, no index needed
+	// 4) if nothing here or below, skip
 	if !hasTs && !hasTsx {
 		return false, false, nil
 	}
 
-	// 5) decide extension for index file
+	// 5) pick extension
 	ext := ".ts"
 	if hasTsx {
 		ext = ".tsx"
@@ -250,7 +228,7 @@ func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTs
 	idxName := "index" + ext
 	idxPath := filepath.Join(dir, idxName)
 
-	// 6) build the export lines, sorted
+	// 6) build exports
 	var exports []string
 	sort.Strings(immediateTs)
 	sort.Strings(immediateTsx)
@@ -281,4 +259,26 @@ func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTs
 	}
 
 	return hasTs, hasTsx, nil
+}
+
+// parseIgnorePatterns splits comma-separated list into slice.
+func parseIgnorePatterns(s string) []string {
+	parts := strings.Split(s, ",")
+	var out []string
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// matchesIgnore returns true if name matches any ignore glob.
+func matchesIgnore(name string, patterns []string) bool {
+	for _, pat := range patterns {
+		if ok, _ := filepath.Match(pat, name); ok {
+			return true
+		}
+	}
+	return false
 }
