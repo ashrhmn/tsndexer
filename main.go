@@ -19,6 +19,7 @@ func main() {
 		dryRun, verbose   bool
 		showHelp          bool
 		ignorePatternsStr string
+		namespaceExports  bool
 	)
 	flag.IntVar(&maxFiles, "m", 10000, "maximum number of .ts/.tsx files to process")
 	flag.IntVar(&maxFiles, "max-files", 10000, "maximum number of .ts/.tsx files to process")
@@ -31,13 +32,19 @@ func main() {
 	flag.StringVar(
 		&ignorePatternsStr,
 		"i",
-		"node_modules,.git,dist,build,out,coverage,.cache,.next,.parcel-cache,lib,esm,cjs,.husky,.vscode,.idea", "comma-separated glob patterns or names to ignore",
+		"node_modules,.git,dist,build,out,coverage,.cache,.next,.parcel-cache,lib,esm,cjs,.husky,.vscode,.idea",
+		"comma-separated glob patterns or names to ignore",
 	)
 	flag.StringVar(
 		&ignorePatternsStr,
 		"ignore",
-		"node_modules,.git,dist,build,out,coverage,.cache,.next,.parcel-cache,lib,esm,cjs,.husky,.vscode,.idea", "comma-separated glob patterns or names to ignore",
+		"node_modules,.git,dist,build,out,coverage,.cache,.next,.parcel-cache,lib,esm,cjs,.husky,.vscode,.idea",
+		"comma-separated glob patterns or names to ignore",
 	)
+
+	// new flag for namespace-style exports
+	flag.BoolVar(&namespaceExports, "N", false, "use namespace exports: export * as <alias> from \"./<file>\"")
+	flag.BoolVar(&namespaceExports, "namespace", false, "use namespace exports: export * as <alias> from \"./<file>\"")
 
 	// Custom usage
 	flag.Usage = func() {
@@ -50,6 +57,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s ./src        # process src folder\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -n ./lib     # dry-run\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s . -i \"dist,build\"  # ignore dist & build\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s -N            # namespace-style exports\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -95,7 +103,7 @@ func main() {
 	}
 
 	// 3) Generate indexes
-	if _, _, err := processDir(root, verbose, dryRun, ignorePatterns); err != nil {
+	if _, _, err := processDir(root, verbose, dryRun, namespaceExports, ignorePatterns); err != nil {
 		fmt.Fprintf(os.Stderr, "Error processing directories: %v\n", err)
 		os.Exit(1)
 	}
@@ -152,7 +160,7 @@ func countAllFiles(root string, verbose bool, ignore []string) (int, error) {
 
 // processDir scans one directory (skipping ignored), recurses, then creates an index file if needed.
 // Returns hasTs, hasTsx indicating whether this subtree contains .ts/.tsx.
-func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTsx bool, err error) {
+func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []string) (hasTs, hasTsx bool, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false, false, err
@@ -196,7 +204,7 @@ func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTs
 	// 2) recurse into subdirectories
 	for _, sd := range subdirs {
 		p := filepath.Join(dir, sd)
-		childTs, childTsx, err := processDir(p, verbose, dryRun, ignore)
+		childTs, childTsx, err := processDir(p, verbose, dryRun, namespaceExports, ignore)
 		if err != nil {
 			return false, false, err
 		}
@@ -220,7 +228,7 @@ func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTs
 		return false, false, nil
 	}
 
-	// 5) pick extension
+	// 5) pick extension for the index file
 	ext := ".ts"
 	if hasTsx {
 		ext = ".tsx"
@@ -231,16 +239,31 @@ func processDir(dir string, verbose, dryRun bool, ignore []string) (hasTs, hasTs
 	// 6) build exports
 	var exports []string
 	sort.Strings(immediateTs)
-	sort.Strings(immediateTsx)
 	for _, f := range immediateTs {
-		exports = append(exports, fmt.Sprintf(`export * from "./%s";`, f))
+		if namespaceExports {
+			alias := strings.ReplaceAll(strings.ReplaceAll(f, "-", "_"), ".", "_")
+			exports = append(exports, fmt.Sprintf(`export * as %s from "./%s";`, alias, f))
+		} else {
+			exports = append(exports, fmt.Sprintf(`export * from "./%s";`, f))
+		}
 	}
+	sort.Strings(immediateTsx)
 	for _, f := range immediateTsx {
-		exports = append(exports, fmt.Sprintf(`export * from "./%s";`, f))
+		if namespaceExports {
+			alias := strings.ReplaceAll(strings.ReplaceAll(f, "-", "_"), ".", "_")
+			exports = append(exports, fmt.Sprintf(`export * as %s from "./%s";`, alias, f))
+		} else {
+			exports = append(exports, fmt.Sprintf(`export * from "./%s";`, f))
+		}
 	}
 	sort.Strings(childWithCode)
 	for _, d := range childWithCode {
-		exports = append(exports, fmt.Sprintf(`export * from "./%s";`, d))
+		if namespaceExports {
+			alias := strings.ReplaceAll(strings.ReplaceAll(d, "-", "_"), ".", "_")
+			exports = append(exports, fmt.Sprintf(`export * as %s from "./%s";`, alias, d))
+		} else {
+			exports = append(exports, fmt.Sprintf(`export * from "./%s";`, d))
+		}
 	}
 	content := strings.Join(exports, "\n") + "\n"
 
