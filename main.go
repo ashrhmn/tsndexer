@@ -20,6 +20,7 @@ func main() {
 		showHelp          bool
 		ignorePatternsStr string
 		namespaceExports  bool
+		skipRoot          bool
 	)
 	flag.IntVar(&maxFiles, "m", 10000, "maximum number of .ts/.tsx files to process")
 	flag.IntVar(&maxFiles, "max-files", 10000, "maximum number of .ts/.tsx files to process")
@@ -46,6 +47,10 @@ func main() {
 	flag.BoolVar(&namespaceExports, "N", false, "use namespace exports: export * as <alias> from \"./<file>\"")
 	flag.BoolVar(&namespaceExports, "namespace", false, "use namespace exports: export * as <alias> from \"./<file>\"")
 
+	// new flag for skipping root index
+	flag.BoolVar(&skipRoot, "s", false, "skip creating index file in root directory")
+	flag.BoolVar(&skipRoot, "skip-root", false, "skip creating index file in root directory")
+
 	// Custom usage
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options] [directory]\n\n", os.Args[0])
@@ -58,6 +63,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -n ./lib     # dry-run\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s . -i \"dist,build\"  # ignore dist & build\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -N            # namespace-style exports\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s -s ./src      # skip root index, only create in subdirs\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -103,7 +109,7 @@ func main() {
 	}
 
 	// 3) Generate indexes
-	if _, _, err := processDir(root, verbose, dryRun, namespaceExports, ignorePatterns); err != nil {
+	if _, _, err := processDir(root, verbose, dryRun, namespaceExports, skipRoot, ignorePatterns); err != nil {
 		fmt.Fprintf(os.Stderr, "Error processing directories: %v\n", err)
 		os.Exit(1)
 	}
@@ -160,7 +166,7 @@ func countAllFiles(root string, verbose bool, ignore []string) (int, error) {
 
 // processDir scans one directory (skipping ignored), recurses, then creates an index file if needed.
 // Returns hasTs, hasTsx indicating whether this subtree contains .ts/.tsx.
-func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []string) (hasTs, hasTsx bool, err error) {
+func processDir(dir string, verbose, dryRun, namespaceExports, skipRoot bool, ignore []string) (hasTs, hasTsx bool, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false, false, err
@@ -173,7 +179,7 @@ func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []str
 		childWithCode []string
 	)
 
-	// 1) scan this folder’s entries
+	// 1) scan this folder's entries
 	for _, e := range entries {
 		name := e.Name()
 		// skip ignored
@@ -204,7 +210,7 @@ func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []str
 	// 2) recurse into subdirectories
 	for _, sd := range subdirs {
 		p := filepath.Join(dir, sd)
-		childTs, childTsx, err := processDir(p, verbose, dryRun, namespaceExports, ignore)
+		childTs, childTsx, err := processDir(p, verbose, dryRun, namespaceExports, false, ignore)
 		if err != nil {
 			return false, false, err
 		}
@@ -215,7 +221,7 @@ func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []str
 		hasTsx = hasTsx || childTsx
 	}
 
-	// 3) incorporate this folder’s immediate files
+	// 3) incorporate this folder's immediate files
 	if len(immediateTs) > 0 {
 		hasTs = true
 	}
@@ -228,7 +234,12 @@ func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []str
 		return false, false, nil
 	}
 
-	// 5) pick extension for the index file
+	// 5) if this is the root directory and skipRoot is true, don't create index file
+	if skipRoot {
+		return hasTs, hasTsx, nil
+	}
+
+	// 6) pick extension for the index file
 	ext := ".ts"
 	if hasTsx {
 		ext = ".tsx"
@@ -236,7 +247,7 @@ func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []str
 	idxName := "index" + ext
 	idxPath := filepath.Join(dir, idxName)
 
-	// 6) build exports
+	// 7) build exports
 	var exports []string
 	sort.Strings(immediateTs)
 	for _, f := range immediateTs {
@@ -267,7 +278,7 @@ func processDir(dir string, verbose, dryRun, namespaceExports bool, ignore []str
 	}
 	content := strings.Join(exports, "\n") + "\n"
 
-	// 7) write or preview
+	// 8) write or preview
 	if verbose {
 		fmt.Printf("→ %s\n", idxPath)
 	}
